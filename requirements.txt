@@ -1,0 +1,7 @@
+fastapi==0.115.12
+gspread==6.2.1
+pyTelegramBotAPI==4.27.0
+python-dotenv==1.1.0
+uvicorn
+requests
+httpx
