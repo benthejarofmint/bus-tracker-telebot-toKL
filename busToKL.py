@@ -1182,39 +1182,80 @@ def _show_bus_detail(call):
         bot.answer_callback_query(call.id, "Error loading details.")
 
 def _generate_fleet_report(chat_id, message_id):
-    """Generate and display the fleet-wide checkpoint count report."""
+    """Generate and display the fleet-wide journey-based report showing bus names per checkpoint."""
     try:
         worksheet = sh.worksheet(GSHEET_TAB)
         raw_data  = worksheet.get_all_values()
-
+ 
         if not raw_data or len(raw_data) < 2:
             bot.send_message(chat_id, "No data found in sheet.")
             return
-
+ 
         headers_lower = [h.strip().lower() for h in raw_data[0]]
         data_rows     = raw_data[1:]
         now           = datetime.now(ZoneInfo("Asia/Singapore")).strftime("%H:%M:%S")
-
-        lines = ["🚌 *ARROW BUS REPORT*\n"]
-        for step_key in steps:
-            col_name  = step_to_column[step_key].strip().lower()
-            col_idx_0 = next((i for i, h in enumerate(headers_lower) if h == col_name), None)
-            count = 0
-            if col_idx_0 is not None:
-                for row_vals in data_rows:
-                    if col_idx_0 < len(row_vals) and row_vals[col_idx_0].strip():
-                        count += 1
-            lines.append(f"*{prompts[step_key]}*: {count} bus(es)")
-
+ 
+        # Get bus # column index
+        try:
+            bus_col_idx = headers_lower.index('bus #')
+        except ValueError:
+            bot.send_message(chat_id, "⚠️ 'Bus #' column not found in sheet.")
+            return
+ 
+        # Total buses registered (any row with a bus number)
+        total_buses = sum(
+            1 for row in data_rows
+            if bus_col_idx < len(row) and row[bus_col_idx].strip()
+        )
+ 
+        # step_counts[i] = total buses that have crossed step i (cumulative)
+        # step_current_buses[i] = buses whose FURTHEST completed step is exactly i (shown as names)
+        step_counts = {i: 0 for i in range(len(steps))}
+        step_current_buses = {i: [] for i in range(len(steps))}
+ 
+        for row_vals in data_rows:
+            bus_name = row_vals[bus_col_idx].strip() if bus_col_idx < len(row_vals) else ""
+            if not bus_name:
+                continue
+            furthest = -1
+            for i, step_key in enumerate(steps):
+                col_name = step_to_column[step_key].strip().lower()
+                col_idx  = next((j for j, h in enumerate(headers_lower) if h == col_name), None)
+                if col_idx is not None and col_idx < len(row_vals) and row_vals[col_idx].strip():
+                    step_counts[i] += 1
+                    furthest = i
+            if furthest >= 0:
+                step_current_buses[furthest].append(bus_name)
+ 
+        for i in step_current_buses:
+            step_current_buses[i].sort()
+ 
+        lines = [
+            "🚌 *ARROW BUS REPORT*",
+            f"*Total number of buses registered: {total_buses}*\n"
+        ]
+ 
+        for i, step_key in enumerate(steps):
+            count = step_counts.get(i, 0)
+            current_buses = step_current_buses.get(i, [])
+            if count == 0:
+                line = f"*{prompts[step_key]}*:"
+            elif current_buses:
+                buses_str = ", ".join(current_buses)
+                line = f"*{prompts[step_key]}*: {buses_str} ({count}/{total_buses})"
+            else:
+                line = f"*{prompts[step_key]}*: ({count}/{total_buses})"
+            lines.append(line)
+ 
         lines.append(f"\n_as of {now}_")
         report_text = "\n".join(lines)
-
+ 
         back_markup = InlineKeyboardMarkup()
         back_markup.add(InlineKeyboardButton("🔙 Back", callback_data="admin_list_refresh"))
         bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
             text=report_text, parse_mode="Markdown", reply_markup=back_markup)
-
+ 
     except Exception as e:
         logging.error(f"Error generating fleet report: {e}")
         bot.send_message(chat_id, f"❌ Failed to generate report: {e}")
