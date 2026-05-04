@@ -80,7 +80,7 @@ HEADER_CACHE = {}
 steps = [
     "left_star", "reached_sg_custom", "left_sg_custom",
     "reached_my_custom", "left_my_custom", "reached_rest_stop",
-    "left_rest_stop", "at_30_min_mark", "reached_runway"
+    "left_rest_stop", "at_30_min_mark", "reached_sunway"
 ]
 
 # Human-readable prompts for each step
@@ -93,7 +93,7 @@ prompts = {
     "reached_rest_stop": "Have you reached the rest stop?",
     "left_rest_stop": "Have you left the rest stop?",
     "at_30_min_mark": "Are you at the toll with many tall yellow building 30mins away from Sunway?",
-    "reached_runway": "Have you reached Sunway? 🎉🚌"
+    "reached_sunway": "Have you reached Sunway? 🎉🚌"
 }
 
 # Doing this so that we can recover lost sessions by making it globally available
@@ -106,7 +106,7 @@ step_to_column = {
     "reached_rest_stop": "Time reach Rest Stop",
     "left_rest_stop": "Time leave Rest Stop",
     "at_30_min_mark": "Time reach 30 min mark",
-    "reached_runway": "Time bus reach sunway"
+    "reached_sunway": "Time bus reach sunway"
 }
 
 
