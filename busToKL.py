@@ -404,12 +404,12 @@ def send_step_prompt(chat_id):
     step_index = user_sessions[chat_id]["step_index"]
     if step_index >= len(steps):
         bot.send_message(chat_id,
-            "🎉 Congratulations! You've successfully reached Star safely. "
+            "🎉 Congratulations! You've successfully reached Sunway safely. "
             "Thank you for your effort 🙌\n\n"
             "A few final reminders to wrap up the journey smoothly:\n\n"
             "• Boys head down first to unload, followed by the girls 🚶‍♂️🚶‍♀️\n\n"
             "• Double-check that everyone has all their belongings 🎒📱\n\n"
-            "• Don't forget to collect the bus IC packs, signages, tracker, and masks — and please pass them back to the FTS at Star 🎭📦\n\n"
+            "• Don't forget to collect the bus IC packs, signages, tracker, and masks — and please pass them back to the Welcome Team at KL! 🎭📦\n\n"
             "• Lastly, make sure all trash is properly disposed of on your own! 🗑️\n\n"
             "Please send /end to terminate this bot. Great job, team!"
         )
