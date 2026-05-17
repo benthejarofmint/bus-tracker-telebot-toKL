@@ -420,7 +420,7 @@ def send_step_prompt(chat_id):
         InlineKeyboardButton(text="⬅️ Back", callback_data="go_back"),
         InlineKeyboardButton(text="✅ Yes", callback_data=f"yes_{step_key}")
     )
-    bot.send_message(chat_id, f"{prompts[step_key]} (Click only when confirmed)", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(chat_id, f"{prompts[step_key]} (Click yes only when confirmed)", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_step_callback(call):
