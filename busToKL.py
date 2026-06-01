@@ -92,8 +92,14 @@ prompts = {
     "left_my_custom": "Have you left MY Customs?",
     "reached_rest_stop": "Have you reached the rest stop?",
     "left_rest_stop": "Have you left the rest stop?",
-    "at_30_min_mark": "Are you at the toll with many tall yellow building 30mins away from Sunway? \n[📍View your location from the checkpoint](https://maps.app.goo.gl/1iLLb1uy5Tp2W9uZ9)\n",
+    "at_30_min_mark": "Are you at the toll with many tall yellow building 30mins away from Sunway?",
     "reached_sunway": "Have you reached Sunway? 🎉🚌"
+}
+
+# Supplementary info shown ONLY to the bus user in send_step_prompt.
+# Kept out of `prompts` so it never leaks into the admin report / detail views.
+step_extra_info = {
+    "at_30_min_mark": "[📍View your location from the checkpoint](https://maps.app.goo.gl/1iLLb1uy5Tp2W9uZ9)",
 }
 
 # Doing this so that we can recover lost sessions by making it globally available
@@ -441,7 +447,11 @@ def send_step_prompt(chat_id):
         InlineKeyboardButton(text="⬅️ Back", callback_data="go_back"),
         InlineKeyboardButton(text="✅ Yes", callback_data=f"yes_{step_key}")
     )
-    bot.send_message(chat_id, f"{prompts[step_key]} (Click yes only when confirmed)", reply_markup=markup, parse_mode="Markdown")
+    prompt_text = f"{prompts[step_key]} (Click yes only when confirmed)"
+    extra = step_extra_info.get(step_key)
+    if extra:
+        prompt_text += f"\n{extra}"
+    bot.send_message(chat_id, prompt_text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_step_callback(call):
