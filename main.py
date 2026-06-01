@@ -5,6 +5,7 @@ from busToKL import process_update_from_webhook
 import uvicorn
 import base64
 import httpx
+import asyncio
 
 load_dotenv()
 
@@ -58,15 +59,23 @@ def health_check():
 
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
-    print("🚨 Incoming Telegram webhook hit!")
+    # print("🚨 Incoming Telegram webhook hit!")
     try:
         body = await request.body()
-        print("📦 Processing webhook...")
-        process_update_from_webhook(body.decode("utf-8"))
+        update_str = body.decode("utf-8")
+        # process_update_from_webhook does blocking telebot + gspread I/O.
+        # Run it in the default threadpool so the event loop can keep
+        # serving other concurrent webhooks while Sheets writes happen.
+        # print("📦 Processing webhook...")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, process_update_from_webhook, update_str)
+        # process_update_from_webhook(body.decode("utf-8"))
         return {"ok": True}
     except Exception as e:
         print("❌ Error processing webhook:", str(e))
-        return {"error": str(e)}
+        # Still return 200/ok so Telegram does NOT retry and re-deliver
+        # the same update (which would double-log a checkpoint).
+        return {"ok": True}
 
 @app.on_event("startup")
 async def startup_event():
