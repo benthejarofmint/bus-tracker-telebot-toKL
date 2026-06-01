@@ -213,8 +213,16 @@ def ask_and_validate_bus_number(message):
 
     user_sessions[chat_id]['bus_number'] = bus_number
 
-    # Try to recover session from sheet
-    session = recover_session_from_sheet(chat_id, bus_number)
+    # Try to recover session from sheet. A raised error here means the lookup
+    # failed (not that the bus is new) — don't fall through to "new bus".
+    try:
+        session = recover_session_from_sheet(chat_id, bus_number)
+    except Exception as e:
+        logging.error(f"[RECOVERY] Sheet lookup failed for {bus_number}: {e}")
+        bot.send_message(chat_id,
+            "⚠️ Couldn't reach the tracking sheet just now. Please re-enter the bus number to try again.")
+        return bot.register_next_step_handler(message,
+            lambda msg: intercept_end_command(msg, ask_and_validate_bus_number))
 
     if session:
         user_sessions[chat_id] = session
@@ -358,7 +366,7 @@ def ask_passenger_count(message):
     user_sessions[chat_id]['passenger_count'] = passenger_count
 
     # Then validate
-    if not passenger_count.isdigit() or int(passenger_count) <= 0:
+    if not passenger_count.isdigit() or not (1 <= int(passenger_count) <= 100):
         bot.send_message(chat_id, "❌ Please enter a valid number for passenger count. E.g. 40")
         return bot.register_next_step_handler(message, 
             lambda msg: intercept_end_command(msg,ask_passenger_count))
@@ -374,8 +382,16 @@ def confirm_user_details(message):
     # user_sessions[chat_id]['passenger_count'] = message.text
     session['passenger_count'] = message.text.strip()
 
-    # Assign row dynamically
-    row = get_or_create_user_row(session['bus_number'])
+    # Assign row dynamically. If the sheet is unreachable, bail out cleanly
+    # rather than storing row=None and silently writing to a bad row later.
+    try:
+        row = get_or_create_user_row(session['bus_number'])
+    except Exception as e:
+        logging.error(f"[ROW] Failed to get/create row for {session['bus_number']}: {e}")
+        bot.send_message(chat_id,
+            "⚠️ Couldn't reach the sheet to reserve your row. Please send the passenger count once more to retry.")
+        return bot.register_next_step_handler(message,
+            lambda msg: intercept_end_command(msg, ask_passenger_count))
     session['row'] = row  # Store for future logging
 
     session = user_sessions[chat_id]
@@ -429,6 +445,11 @@ def send_step_prompt(chat_id):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_step_callback(call):
+    # Acknowledge immediately so the button stops showing a loading spinner.
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     chat_id = call.message.chat.id
     data    = call.data
 
@@ -719,9 +740,11 @@ def is_valid_name(text):
 @bot.message_handler(commands=['end'])
 def end_bot(message):
     chat_id = message.chat.id
-    # user_sessions.pop(chat_id, None)
+    # Drop any pending next-step handler so a stale prompt can't fire after /end.
+    bot.clear_step_handler_by_chat_id(chat_id)
+    user_sessions.pop(chat_id, None)
     bot.send_message(chat_id, "✅ Your session has been terminated. You can restart anytime with /start.")
-    user_sessions.pop(message.chat.id, None)
+    # user_sessions.pop(message.chat.id, None)
 
 
 # it will check by bus number and see if the user has an existing code
@@ -751,9 +774,11 @@ def get_or_create_user_row(bus_number):
         if existing.strip().lower() == bus_number.strip().lower():
             return i + 1  # gspread uses 1-based indexing
 
-    # If not found, append a new row
+    # If not found, append a new row AND immediately write the bus number to
+    # reserve it. Without this, two buses registering in the same window both
+    # compute the same index and one overwrites the other.
     new_row_index = len(bus_numbers) + 1
-    # worksheet.update_cell(new_row_index, 1, bus_number)
+    worksheet.update_cell(new_row_index, bus_col_idx, bus_number)
     return new_row_index
 
 
