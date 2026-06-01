@@ -117,17 +117,22 @@ def retry_on_error(max_retries=3, delay=2):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            last_exc = None
             for i in range(max_retries):
                 try:
                     return func(*args, **kwargs)
                 except (gspread.exceptions.APIError, gspread.exceptions.GSpreadException) as e:
+                    last_exc = e
                     logging.error(f"GSheet Error: {e}. Retrying {i+1}/{max_retries}...")
                     time.sleep(delay * (i + 1))
                 except Exception as e:
                     logging.error(f"Unexpected error in GSheet op: {e}")
                     raise e
             logging.error("Max retries reached for GSheet operation.")
-            return None
+            # return None
+            # Re-raise so callers can distinguish "operation failed" from a
+            # legitimate None result (e.g. recovery finding no matching bus).
+            raise last_exc
         return wrapper
     return decorator
 
