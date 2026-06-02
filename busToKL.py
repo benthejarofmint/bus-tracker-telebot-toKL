@@ -80,7 +80,7 @@ HEADER_CACHE = {}
 steps = [
     "left_star", "reached_sg_custom", "left_sg_custom",
     "reached_my_custom", "left_my_custom", "reached_rest_stop",
-    "left_rest_stop", "at_30_min_mark", "reached_sunway"
+    "left_rest_stop", "at_last_toll", "reached_sunway"
 ]
 
 # Human-readable prompts for each step
@@ -92,14 +92,14 @@ prompts = {
     "left_my_custom": "Have you left MY Customs?",
     "reached_rest_stop": "Have you reached the rest stop?",
     "left_rest_stop": "Have you left the rest stop?",
-    "at_30_min_mark": "Are you at the toll with many tall yellow building 30mins away from Sunway?",
+    "at_last_toll": "Are you at the last toll with many tall yellow building around 30mins away from Sunway?",
     "reached_sunway": "Have you reached Sunway? 🎉🚌"
 }
 
 # Supplementary info shown ONLY to the bus user in send_step_prompt.
 # Kept out of `prompts` so it never leaks into the admin report / detail views.
 step_extra_info = {
-    "at_30_min_mark": "[📍View your location from the checkpoint](https://maps.app.goo.gl/1iLLb1uy5Tp2W9uZ9)",
+    "at_last_toll": "[📍View your location from this checkpoint](https://maps.app.goo.gl/1iLLb1uy5Tp2W9uZ9)",
 }
 
 # Doing this so that we can recover lost sessions by making it globally available
@@ -111,7 +111,7 @@ step_to_column = {
     "left_my_custom": "Time leave MY custom",
     "reached_rest_stop": "Time reach Rest Stop",
     "left_rest_stop": "Time leave Rest Stop",
-    "at_30_min_mark": "Time reach 30 min mark",
+    "at_last_toll": "Time reach Last Toll",
     "reached_sunway": "Time bus reach sunway"
 }
 
