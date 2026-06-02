@@ -431,13 +431,9 @@ def send_step_prompt(chat_id):
     step_index = user_sessions[chat_id]["step_index"]
     if step_index >= len(steps):
         bot.send_message(chat_id,
-            "🎉 Congratulations! You've successfully reached Sunway safely. "
-            "Thank you for your effort 🙌\n\n"
-            "A few final reminders to wrap up the journey smoothly:\n\n"
-            "• Boys head down first to unload, followed by the girls 🚶‍♂️🚶‍♀️\n\n"
-            "• Double-check that everyone has all their belongings 🎒📱\n\n"
-            "• Don't forget to collect the bus IC packs, signages, tracker, and masks — and please pass them back to the Welcome Team at KL! 🎭📦\n\n"
-            "• Lastly, make sure all trash is properly disposed of on your own! 🗑️\n\n"
+            "🎉 Congratulations! You've successfully reached Sunway safely! "
+            "Thank you for your effort and your labour of love 🙌\n\n"
+            "Please refer to the reminders as stated in the above messages ↑↑ and take instructions from Welcome Team at KL as well! 🎭📦\n\n"
             "Please send /end to terminate this bot. Great job, team!"
         )
         return
@@ -461,6 +457,7 @@ def handle_step_callback(call):
     except Exception:
         pass
     chat_id = call.message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
     data    = call.data
 
     # ── Admin callbacks (no session required) ─────────────────────────────────
@@ -516,16 +513,12 @@ def handle_step_callback(call):
             if step_key == "left_my_custom":
                 bot.send_message(
                     chat_id,
-                    "🔔 *Reminder for Bus IC:*\nPlease put back the event signages at the:\n"
+                    "🔔 *Reminder for Bus IC:*\n"
+                    "Please put back the Bus signages at the:\n"
                     "- 🪧 *Front*\n"
                     "- 🔲 *Left side*\n"
-                    "- 🪧 *Rear* of the bus.",
-                    parse_mode="Markdown"
-                )
-
-                bot.send_message(
-                    chat_id,
-                    "🔔 *Reminder for Bus IC:*\nPlease remember to do a passport check with everyone in the bus before leaving customs!\n",
+                    "- 🪧 *Rear* of the bus.\n"
+                    "Please also remember to do a *passport check* with everyone in the bus before leaving customs!\n",
                     parse_mode="Markdown"
                 )
 
@@ -534,14 +527,21 @@ def handle_step_callback(call):
                     chat_id,
                     "🔔 *Reminder for Bus IC:*\nPlease bring down at the MY customs:\n"
                     "- 🪧 *3 Bus Signages (Front, Left, Rear)*\n"
-                    "- 😷 *Surgical masks*\n"
-                    "- 🎒 *ALL BELONGINGS*",
+                    "- 😷 *N95 masks*\n"
+                    "- 🎒 *ALL BELONGINGS*\n"
+                    "Please also remember to do a *passport check* with everyone in the bus before leaving customs!\n",
                     parse_mode="Markdown"
                 )
-
+            
+            if step_key == "at_last_toll":
                 bot.send_message(
                     chat_id,
-                    "🔔 *Reminder for Bus IC:*\nPlease remember to do a passport check with everyone in the bus before leaving customs!\n",
+                    "🥳 Woohoo ! You're almost reaching Sunway! This is the final stretch, see you there soon! \n\n"
+                    "A few final reminders to wrap up the journey smoothly before you arrive at Sunway:\n"
+                    "• Boys head down first to unload, followed by the girls 🚶‍♂️🚶‍♀️\n"
+                    "• Double-check that everyone has all their belongings 🎒📱\n"
+                    "• Don't forget to collect the bus IC packs, signages, tracker, and masks — and please pass them back to the Welcome Team at KL! 🎭📦\n"
+                    "• Lastly, make sure all trash is properly disposed of on your own! 🗑️",
                     parse_mode="Markdown"
                 )
 
