@@ -514,7 +514,7 @@ def handle_step_callback(call):
                 bot.send_message(
                     chat_id,
                     "🔔 *Reminder for Bus IC:*\n"
-                    "Please put back the Bus signages at the:\n"
+                    "Please *REMOVE* the Bus signages at the:\n"
                     "- 🪧 *Front*\n"
                     "- 🔲 *Left side*\n"
                     "- 🪧 *Rear* of the bus.\n"
@@ -522,13 +522,37 @@ def handle_step_callback(call):
                     parse_mode="Markdown"
                 )
 
+            if step_key == "reached_rest_stop":
+                bot.send_message(
+                    chat_id,
+                    "🔔 *Reminder for Bus IC:*\n"
+                    "Please *PUT UP* the Bus signages at the:\n"
+                    "- 🪧 *Front*\n"
+                    "- 🔲 *Left side*\n"
+                    "- 🪧 *Rear* of the bus\n"
+                    "for easier identification of your bus.\n",
+                    parse_mode="Markdown"
+                )
+
+            if step_key == "left_rest_stop":
+                bot.send_message(
+                    chat_id,
+                    "🔔 *Reminder for Bus IC:*\n"
+                    "Please *REMOVE* the Bus signages at the:\n"
+                    "- 🪧 *Front*\n"
+                    "- 🔲 *Left side*\n"
+                    "- 🪧 *Rear* of the bus\n"
+                    "before leaving the rest stop.\n",
+                    parse_mode="Markdown"
+                )
+
             if step_key == "left_sg_custom":
                 bot.send_message(
                     chat_id,
-                    "🔔 *Reminder for Bus IC:*\nPlease bring down at the MY customs:\n"
-                    "- 🪧 *3 Bus Signages (Front, Left, Rear)*\n"
+                    "🔔 *Reminder for Bus IC:*\nPlease bring down *at the MY customs*:\n"
                     "- 😷 *N95 masks*\n"
                     "- 🎒 *ALL BELONGINGS*\n"
+                    "✅ The 🪧 *3 Bus Signages (Front, Left, Rear)* can be left on for you to identify the bus after clearing MY immigration.\n"
                     "Please also remember to do a *passport check* with everyone in the bus before leaving customs!\n",
                     parse_mode="Markdown"
                 )
