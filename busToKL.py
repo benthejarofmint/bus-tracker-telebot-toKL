@@ -221,6 +221,7 @@ def ask_and_validate_bus_number(message):
 
     # Try to recover session from sheet. A raised error here means the lookup
     # failed (not that the bus is new) — don't fall through to "new bus".
+    bot.send_chat_action(chat_id, 'typing')
     try:
         session = recover_session_from_sheet(chat_id, bus_number)
     except Exception as e:
@@ -552,7 +553,7 @@ def handle_step_callback(call):
                     "🔔 *Reminder for Bus IC:*\nPlease bring down *at the MY customs*:\n"
                     "- 😷 *N95 masks*\n"
                     "- 🎒 *ALL BELONGINGS*\n"
-                    "✅ The 🪧 *3 Bus Signages (Front, Left, Rear)* can be left on for you to identify the bus after clearing MY immigration.\n"
+                    "✅ The 🪧 *3 Bus Signages (Front, Left, Rear)* can be left on for you to identify the bus after clearing MY immigration.\n\n"
                     "Please also remember to do a *passport check* with everyone in the bus before leaving SG customs!\n",
                     parse_mode="Markdown"
                 )
