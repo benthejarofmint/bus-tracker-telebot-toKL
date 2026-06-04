@@ -518,7 +518,7 @@ def handle_step_callback(call):
                     "- 🪧 *Front*\n"
                     "- 🔲 *Left side*\n"
                     "- 🪧 *Rear* of the bus.\n"
-                    "Please also remember to do a *passport check* with everyone in the bus before leaving customs!\n",
+                    "Please also remember to do a *passport check* with everyone in the bus before leaving MY customs!\n",
                     parse_mode="Markdown"
                 )
 
@@ -553,7 +553,7 @@ def handle_step_callback(call):
                     "- 😷 *N95 masks*\n"
                     "- 🎒 *ALL BELONGINGS*\n"
                     "✅ The 🪧 *3 Bus Signages (Front, Left, Rear)* can be left on for you to identify the bus after clearing MY immigration.\n"
-                    "Please also remember to do a *passport check* with everyone in the bus before leaving customs!\n",
+                    "Please also remember to do a *passport check* with everyone in the bus before leaving SG customs!\n",
                     parse_mode="Markdown"
                 )
             
