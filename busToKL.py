@@ -12,6 +12,9 @@ from google.oauth2 import service_account  # ✅ Correct import
 import logging
 import time
 import functools
+import threading
+from collections import OrderedDict
+import requests
 
 # ─── LOGGING SETUP ────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,12 +24,66 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 load_dotenv()
 BOT_TOKEN = os.getenv('TELE_TOKEN')
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
+
+# ─── DUPLICATE-UPDATE PROTECTION ──────────────────────────────────────────────
+_processed_updates = OrderedDict()
+_processed_lock = threading.Lock()
+_MAX_PROCESSED_IDS = 10000
+
+def _is_duplicate_update(update_id):
+    if update_id is None:
+        return False
+    with _processed_lock:
+        if update_id in _processed_updates:
+            return True
+        _processed_updates[update_id] = True
+        while len(_processed_updates) > _MAX_PROCESSED_IDS:
+            _processed_updates.popitem(last=False)
+        return False
+    
+# Serialise processing per chat so two near-simultaneous taps from the same user
+# can't interleave and both advance the checkpoint / both write to the sheet.
+_chat_locks = {}
+_chat_locks_guard = threading.Lock()
+_sheet_lock = threading.RLock() # RLock in case any sheet function calls another
+
+def _get_chat_lock(chat_id):
+    with _chat_locks_guard:
+        lock = _chat_locks.get(chat_id)
+        if lock is None:
+            lock = threading.Lock()
+            _chat_locks[chat_id] = lock
+        return lock
+    
+def _extract_chat_id(update):
+    if getattr(update, "message", None):
+        return update.message.chat.id
+    if getattr(update, "callback_query", None) and update.callback_query.message:
+        return update.callback_query.message.chat.id
+    if getattr(update, "edited_message", None):
+        return update.edited_message.chat.id
+    return None
 
 def process_update_from_webhook(update_json):
     """Entry point called by main.py for webhook mode."""
     update = telebot.types.Update.de_json(json.loads(update_json))
-    bot.process_new_updates([update])
+    if update is None:
+        return
+    
+    # Drop Telegram's redelivered duplicates so one tap = one action.
+    if _is_duplicate_update(update.update_id):
+        logging.info(f"[DEDUP] Ignoring duplicate update {update.update_id}")
+        return
+    
+    # Serialise per-user so concurrent taps don't race on user_sessions.
+    chat_id = _extract_chat_id(update)
+    lock = _get_chat_lock(chat_id) if chat_id is not None else None
+    if lock:
+        with lock:
+            bot.process_new_updates([update])
+    else:
+        bot.process_new_updates([update])
 
 # Load environment variables from .env file
 # UNCOMMENT TO run locally to connect google sheets
@@ -126,8 +183,9 @@ def retry_on_error(max_retries=3, delay=2):
             last_exc = None
             for i in range(max_retries):
                 try:
-                    return func(*args, **kwargs)
-                except (gspread.exceptions.APIError, gspread.exceptions.GSpreadException) as e:
+                    with _sheet_lock:
+                        return func(*args, **kwargs)
+                except (gspread.exceptions.APIError, gspread.exceptions.GSpreadException, requests.exceptions.RequestException) as e:
                     last_exc = e
                     logging.error(f"GSheet Error: {e}. Retrying {i+1}/{max_retries}...")
                     time.sleep(delay * (i + 1))
@@ -238,7 +296,7 @@ def ask_and_validate_bus_number(message):
             parse_mode="Markdown")
         send_step_prompt(chat_id)
     else:
-        user_sessions[chat_id] = {"step_index": 0, "bus_number": bus_number}
+        user_sessions[chat_id] = {"step_index": 0, "bus_number": bus_number, "username": message.from_user.username or ""}
         bot.send_message(chat_id, 
             "🆕 New bus detected. Please enter the *Wave number* (1–5):",
             parse_mode="Markdown")
@@ -485,8 +543,16 @@ def handle_step_callback(call):
             # clear_cell(chat_id)
             # IMPROVEMENT 4: dynamic clear using step_to_column (not hardcoded math)
             step_to_undo = steps[session["step_index"] - 1]
-            clear_cell(chat_id, step_to_undo)
+            try:
+                clear_cell(chat_id, step_to_undo)
+            except Exception as e:
+                logging.error(f"[go_back] clear_cell failed for {chat_id}: {e}")
+                bot.send_message(chat_id,
+                    "⚠️ Connection hiccup while undoing that checkpoint. "
+                    "Please tap ⬅️ Back again to retry.")
+                return  # leave step_index untouched; user stays on current step
             session["step_index"] -= 1
+            session.pop('awaiting_passenger_count_step', None) # allow re-confirming this step
             current_step = steps[session["step_index"]]
             logging.info(f"⬅️ User {chat_id} went back to step {session['step_index']} ({current_step})")
             bot.send_message(chat_id,
@@ -505,6 +571,12 @@ def handle_step_callback(call):
         step_key = data[4:]
         expected_step = steps[session["step_index"]]
         logging.debug(f"[DEBUG] step_key: {step_key}, expected_step: {expected_step}, step_index: {session['step_index']}")
+
+        # Idempotency: if we're already waiting for the pax count for this exact step, 
+        # this is a duplicate tap — ignore it instead of re-prompting.
+        if session.get('awaiting_passenger_count_step') == step_key:
+            logging.info(f"[DEDUP] Duplicate yes_{step_key} from {chat_id}; ignoring.")
+            return
 
         if step_key == expected_step:
             # log_to_excel_placeholder(chat_id, step_key)
@@ -577,8 +649,11 @@ def handle_step_callback(call):
 
             
     elif data == "confirm_details":
-        user_sessions[chat_id]['details_confirmed'] = True
         chat_id = call.message.chat.id
+        # Idempotency: if details were already saved, a second tap is a duplicate.
+        if session.get('details_confirmed'):
+            logging.info(f"[DEDUP] Duplicate confirm_details from {chat_id}; ignoring.")
+            return
         bot.send_message(chat_id, "⏳ Saving your details to Google Sheet...")
 
         try:
@@ -586,6 +661,8 @@ def handle_step_callback(call):
         except Exception as e:
             bot.send_message(chat_id, f"❌ Failed to save details: {e}")
             return
+        
+        user_sessions[chat_id]['details_confirmed'] = True
 
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🟢 Okay", callback_data="begin_checklist"))
@@ -600,7 +677,12 @@ def handle_step_callback(call):
         bot.send_message(chat_id, "Great! Please click the button below to begin the journey checklist.", reply_markup=markup)
 
     elif data == "begin_checklist":
-       start_checkpoint_flow(call.message)
+       # Idempotency: only start the checklist once, even on a double-tap.
+        if session.get('checklist_started'):
+            logging.info(f"[DEDUP] Duplicate begin_checklist from {chat_id}; ignoring.")
+            return
+        session['checklist_started'] = True
+        start_checkpoint_flow(call.message)
 
     elif data == "edit_details":
         # bot.send_message(call.message.chat.id, "Let’s start over. Please enter the bus number:")
@@ -666,11 +748,6 @@ def handle_passenger_count_after_step(message):
         )
         return bot.register_next_step_handler(msg, lambda msg1: intercept_end_command(msg1,handle_mismatch_reason))
 
-    user_sessions[chat_id]['passenger_log'].append({
-        'step': step_key,
-        'count': int(passenger_count)
-    })
-
     logging.info(f"[LOG] ✅ Saved count: {passenger_count} for step: {step_key} (User: {chat_id})")
     logging.debug(f"[STATE] Full log for user {chat_id}: {user_sessions[chat_id]['passenger_log']}")
 
@@ -680,9 +757,12 @@ def handle_passenger_count_after_step(message):
 
     try:
         log_checkpoint_to_sheet(chat_id, step_key)
-        bot.send_message(chat_id, "✅ Checkpoint successfully saved.")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Failed to save checkpoint: {e}")
+        m = bot.send_message(chat_id, f"❌ Failed to save checkpoint: {e}\n"
+            "Please enter the passenger count again to retry; "
+            "you haven't moved past this checkpoint.")
+        # re-register so the next message routes back here, and DON'T advance
+        return bot.register_next_step_handler(m, lambda msg1: intercept_end_command(msg1, handle_passenger_count_after_step))
 
     # threading.Thread(
     #   target=log_checkpoint_to_sheet,
@@ -690,14 +770,21 @@ def handle_passenger_count_after_step(message):
     # ).start()
     # bot.send_message(chat_id, "✅ Passenger count recorded.")
 
+    user_sessions[chat_id]['passenger_log'].append({
+        'step': step_key,
+        'count': current_pax
+    })
+    
+    bot.send_message(chat_id, "✅ Checkpoint successfully saved.")
     user_sessions[chat_id]['step_index'] += 1
+    user_sessions[chat_id].pop('awaiting_passenger_count_step', None)  # step done, allow next/re-confirm
     send_step_prompt(chat_id)
 
 def handle_mismatch_reason(message):
     chat_id = message.chat.id
     reason = message.text.strip()
     text = message.text.strip()
-    mismatch = user_sessions[chat_id].pop('pending_pax_mismatch', None)
+    
 
     if text.startswith("/edit_pax"):
         return handle_edit_pax(message)
@@ -706,20 +793,10 @@ def handle_mismatch_reason(message):
     if text.startswith("/end"):
         return end_bot(message)
 
+    mismatch = user_sessions[chat_id].get('pending_pax_mismatch')
     if not mismatch:
         bot.send_message(chat_id, "⚠️ No mismatch context found. Please retry the step.")
         return
-
-
-    # Ensure passenger_log exists
-    if 'passenger_log' not in user_sessions[chat_id]:
-        user_sessions[chat_id]['passenger_log'] = []
-
-    # Log count
-    user_sessions[chat_id]['passenger_log'].append({
-        'step': mismatch['step_key'],
-        'count': mismatch['actual_count']
-    })
 
     # ✅ Now log to sheet, with red remark
     # log_checkpoint_to_sheet(
@@ -740,14 +817,24 @@ def handle_mismatch_reason(message):
             expected_pax=mismatch['expected_count'],
             remark=reason
         )
-        bot.send_message(chat_id, "✅ Checkpoint and remarks successfully saved.")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Failed to save checkpoint with remark: {e}")
+        m = bot.send_message(chat_id, f"❌ Failed to save checkpoint: {e}\n"
+            "Please type the reason again to retry; you haven't moved past this checkpoint.")
+        return bot.register_next_step_handler(
+            m, lambda msg1: intercept_end_command(msg1, handle_mismatch_reason)) # stay on this step, do NOT increment step_index
+    
+    # write succeeded — now it's safe to consume the context and record
+    user_sessions[chat_id].pop('pending_pax_mismatch', None)
 
-    # Update the expected pax count to the new actual count so future checkpoints
-    # compare against the latest confirmed headcount, not the original registration number.
-    user_sessions[chat_id]['passenger_count'] = str(mismatch['actual_count'])
-    logging.info(f"[PAX] Updated expected pax for user {chat_id} to {mismatch['actual_count']}")
+    # Ensure passenger_log exists
+    if 'passenger_log' not in user_sessions[chat_id]:
+        user_sessions[chat_id]['passenger_log'] = []
+    
+    # Log count
+    user_sessions[chat_id]['passenger_log'].append({
+        'step': mismatch['step_key'],
+        'count': mismatch['actual_count']
+    })
     
     # threading.Thread(
     #   target=log_checkpoint_to_sheet,
@@ -759,10 +846,15 @@ def handle_mismatch_reason(message):
     #   }
     # ).start()
     # bot.send_message(chat_id, "✅ Passenger count and remark recorded.")
+
+    # Update the expected pax count to the new actual count so future checkpoints
+    # compare against the latest confirmed headcount, not the original registration number.
+    bot.send_message(chat_id, "✅ Checkpoint and remarks successfully saved.")
+    user_sessions[chat_id]['passenger_count'] = str(mismatch['actual_count'])
+    logging.info(f"[PAX] Updated expected pax for user {chat_id} to {mismatch['actual_count']}")
     user_sessions[chat_id]['step_index'] += 1
+    user_sessions[chat_id].pop('awaiting_passenger_count_step', None)  # step done, allow next/re-confirm
     send_step_prompt(chat_id)
-
-
 
 
 #validation helper function.
@@ -771,7 +863,6 @@ def is_valid_name(text):
 
 
 
-    
 @bot.message_handler(commands=['end'])
 def end_bot(message):
     chat_id = message.chat.id
@@ -783,7 +874,7 @@ def end_bot(message):
 
 
 # it will check by bus number and see if the user has an existing code
-
+@retry_on_error()
 def get_column_mapping(worksheet):
     title = worksheet.title  # e.g. 'D1'
 
@@ -795,6 +886,7 @@ def get_column_mapping(worksheet):
 
     HEADER_CACHE[title] = column_map
     return column_map
+
 @retry_on_error()
 def get_or_create_user_row(bus_number):
     """IMPROVEMENT 3: Find row by looking up the Bus # column header, not hardcoded col A."""
@@ -816,7 +908,7 @@ def get_or_create_user_row(bus_number):
     worksheet.update_cell(new_row_index, bus_col_idx, bus_number)
     return new_row_index
 
-
+@retry_on_error()
 def clear_cell(chat_id, step_key):
     session = user_sessions[chat_id]
     # step_index = session["step_index"]
@@ -864,7 +956,7 @@ def log_initial_details_to_sheet(chat_id):
             'bus ic':     session['bus_ic'],
             'bus 2ic':    session['bus_2ic'],
             'cgs':        session['cgs'],
-            'chat id':    str(chat_id),
+            'username':   session.get('username', ''),
         }
         updates = [
             {'range': gspread.utils.rowcol_to_a1(row, col_map[h]), 'values': [[v]]}
@@ -920,8 +1012,8 @@ def log_checkpoint_to_sheet(chat_id, step_key, actual_pax=None, expected_pax=Non
             updates.append({'range': gspread.utils.rowcol_to_a1(row, remarks_col_index),
                             'values': [['']]})
             worksheet.batch_update(updates)
-            worksheet.format(gspread.utils.rowcol_to_a1(row, remarks_col_index),
-                             {"backgroundColor": {"red": 1, "green": 1, "blue": 1}})
+            # worksheet.format(gspread.utils.rowcol_to_a1(row, remarks_col_index),
+            #                  {"backgroundColor": {"red": 1, "green": 1, "blue": 1}})
 
 
     except KeyError as e:
@@ -963,6 +1055,7 @@ def recover_session_from_sheet(chat_id, bus_number):
             pax = safe_get("no. of pax")
             bus_ic = safe_get("bus ic")
             bus_2ic = safe_get("bus 2ic")
+            username = safe_get("username")
 
             # Step recovery
             step_index = 0
@@ -984,6 +1077,7 @@ def recover_session_from_sheet(chat_id, bus_number):
                 "passenger_count": pax,
                 "bus_ic": bus_ic,
                 "bus_2ic": bus_2ic,
+                "username": username,
                 "details_confirmed": True
             }
 
@@ -1013,7 +1107,7 @@ def update_plate_number(message):
         return bot.register_next_step_handler(message, update_plate_number)
 
     # Update in-memory session
-    user_sessions[chat_id]['bus_plate'] = plate
+    # user_sessions[chat_id]['bus_plate'] = plate
 
     # # Update Google Sheet in thread
     # threading.Thread(
@@ -1024,6 +1118,7 @@ def update_plate_number(message):
     bot.send_message(chat_id, f"🔄 Updating Google Sheet with new plate *{plate}*...", parse_mode="Markdown")
     _update_plate_number_sync(chat_id, plate)
 
+@retry_on_error()
 def _update_plate_number_sync(chat_id, plate):
     if 'row' not in user_sessions[chat_id]:
         print(f"[INFO] No row assigned yet for chat_id {chat_id}")
@@ -1040,7 +1135,7 @@ def _update_plate_number_sync(chat_id, plate):
             worksheet.format(gspread.utils.rowcol_to_a1(row, col_index), {
             "backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}  # Light yellow
             })
-            
+            user_sessions[chat_id]['bus_plate'] = plate
             bot.send_message(chat_id, f"✅ Bus plate updated to *{plate}* in Google Sheet.", parse_mode="Markdown")
             send_step_prompt(chat_id)
         else:
@@ -1073,8 +1168,8 @@ def update_pax(message):
             bot.send_message(chat_id, "❌ Invalid input. Please enter a valid number of passengers (1-100).")
             return bot.register_next_step_handler(message, update_pax)
 
-        # Update in-memory session
-        user_sessions[chat_id]['passenger_count'] = str(pax)
+        # do NOT Update in-memory session before confirmation of sheet write
+        # user_sessions[chat_id]['passenger_count'] = str(pax)
 
         # Update Google Sheet in a separate thread
         # threading.Thread(
@@ -1089,6 +1184,7 @@ def update_pax(message):
         bot.send_message(chat_id, "❌ Invalid input. Please enter a valid number for passengers.")
         return bot.register_next_step_handler(message, update_pax)
 
+@retry_on_error()
 def _update_pax_sync(chat_id, pax):
     if 'row' not in user_sessions[chat_id]:
         logging.info(f"[INFO] No row assigned yet for chat_id {chat_id}")
@@ -1106,7 +1202,7 @@ def _update_pax_sync(chat_id, pax):
             worksheet.format(gspread.utils.rowcol_to_a1(row, col_index), {
             "backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}  # Light yellow
             })
-
+            user_sessions[chat_id]['passenger_count'] = str(pax)
             bot.send_message(chat_id, f"✅ Passenger count updated to *{pax}* in Google Sheet.", parse_mode="Markdown")
             send_step_prompt(chat_id)
         else:
@@ -1137,6 +1233,7 @@ def admin_list_buses(message):
         return  # silently ignore non-admins
     _send_admin_list(message.chat.id)
 
+@retry_on_error()
 def _send_admin_list(chat_id, message_id=None):
     """Send (or edit) the admin bus-list panel with a 📊 Generate Report button."""
     try:
@@ -1167,7 +1264,7 @@ def _send_admin_list(chat_id, message_id=None):
 
         panel_text = "📋 *Admin Panel: Select a Bus*"
         if message_id:
-            bot.edit_message_text(
+            _safe_edit(
                 chat_id=chat_id, message_id=message_id,
                 text=panel_text, reply_markup=markup, parse_mode="Markdown")
         else:
@@ -1177,6 +1274,17 @@ def _send_admin_list(chat_id, message_id=None):
         logging.error(f"Error fetching admin bus list: {e}")
         bot.send_message(chat_id, f"⚠️ Error: {str(e)}")
 
+def _safe_edit(chat_id, message_id, text, reply_markup=None, parse_mode="Markdown"):
+    try:
+        bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except telebot.apihelper.ApiTelegramException as e:
+        if "message is not modified" in str(e).lower():
+            return  # identical content already shown — nothing to do
+        raise
+
+@retry_on_error()
 def _show_bus_detail(call):
     """Show individual bus checkpoint status for admin."""
     chat_id = call.message.chat.id
@@ -1186,6 +1294,9 @@ def _show_bus_detail(call):
         raw_data       = worksheet.get_all_values()
         headers_lower  = [h.strip().lower() for h in raw_data[0]]
         actual_row     = raw_data[data_row_index + 1]
+        header_len = len(raw_data[0])
+        if len(actual_row) < header_len:
+            actual_row = actual_row + [''] * (header_len - len(actual_row))
 
         try:
             bus_col_idx = headers_lower.index('bus #')
@@ -1203,10 +1314,13 @@ def _show_bus_detail(call):
         bus_ic      = safe_col('bus ic')
         bus_2ic     = safe_col('bus 2ic')
         pax         = safe_col('no. of pax')
-        chat_id_val = safe_col('chat id')
+        username    = safe_col('username')
 
         # Make the Bus IC name a deep link if we have their chat ID
-        ic_display = f"[{bus_ic}](tg://user?id={chat_id_val})" if chat_id_val else bus_ic
+        if username:
+            ic_display = f"[{bus_ic}](https://t.me/{username})"
+        else:
+            ic_display = bus_ic
 
         steps_done   = 0
         status_lines = []
@@ -1238,7 +1352,7 @@ def _show_bus_detail(call):
 
         back_markup = InlineKeyboardMarkup()
         back_markup.add(InlineKeyboardButton("🔙 Back", callback_data="admin_back"))
-        bot.edit_message_text(
+        _safe_edit(
             chat_id=chat_id, message_id=call.message.message_id,
             text=msg, parse_mode="Markdown", reply_markup=back_markup)
 
@@ -1246,6 +1360,7 @@ def _show_bus_detail(call):
         logging.error(f"Error showing bus detail: {e}")
         bot.answer_callback_query(call.id, "Error loading details.")
 
+@retry_on_error()
 def _generate_fleet_report(chat_id, message_id):
     """Generate and display the fleet-wide journey-based report showing bus names per checkpoint."""
     try:
@@ -1317,7 +1432,7 @@ def _generate_fleet_report(chat_id, message_id):
  
         back_markup = InlineKeyboardMarkup()
         back_markup.add(InlineKeyboardButton("🔙 Back", callback_data="admin_list_refresh"))
-        bot.edit_message_text(
+        _safe_edit(
             chat_id=chat_id, message_id=message_id,
             text=report_text, parse_mode="Markdown", reply_markup=back_markup)
  
